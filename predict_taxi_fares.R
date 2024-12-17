@@ -1,113 +1,69 @@
-#Loading the tidyverse
+# Loading necessary libraries
 library(tidyverse)
-
-#change wd
-setwd("/Users/darla/Rprograms/Predict Taxi Fares") 
-
-getwd() 
-
-# Reading in the taxi data
-taxi <- read_csv('datasets/taxi_fares.csv')
-
-# Taking a look at the first few rows in taxi
-head(taxi)
-dim(taxi)
-
-#2_Clean the Data 
-
-# Renaming the location variables, dropping any journeys with zero fares and zero tips, and creating the total variable as the log sum of fare and tip
-taxi <- taxi %>%
-    rename(lat = pickup_latitude,
-              long = pickup_longitude) %>%
-      filter(fare_amount > 0 | tip_amount > 0)  %>% 
-            mutate(total = log(fare_amount + tip_amount))
-
-#dim(taxi)
-
-# Reducing the data to taxi trips starting in Manhattan, Manhattan is bounded by the rectangle with latitude from 40.70 to 40.83 and longitude from -74.025 to -73.93
-taxi <- taxi  %>% 
-filter(between(long, -74.025, -73.93) &
-      between(lat,40.70, 40.83 ))
-#dim(taxi)
-
-# Loading in ggmap and viridis for nice colors
 library(ggmap)
 library(viridis)
-
-# Retrieving a stored map object which originally was created by
-# manhattan <- get_map("manhattan", zoom = 12, color = "bw")
-manhattan <- readRDS("datasets/manhattan.rds")
-
-# Drawing a density map with the number of journey start locations
-ggmap(manhattan, darken = 0.5) +
-   scale_fill_viridis(option = 'plasma') +
-geom_bin2d(aes(x = long, y = lat), data = taxi, bins = 60, alpha = 0.6) +
-labs()
-
-# Loading in the tree package
-library(tree)
-
-# Fitting a tree to lat and long
-fitted_tree <- tree(total ~ lat + long, data = taxi)
-
-# Draw a diagram of the tree 
-plot(fitted_tree)
-text(fitted_tree, pretty = 0)
-
-# Loading in the lubridate package
 library(lubridate)
-
-# Generate the three new time variables
-taxi <- taxi %>% 
-    mutate(hour = hour(pickup_datetime),
-          wday = wday(pickup_datetime, label = TRUE),
-          month = month(pickup_datetime, label = TRUE))
-
-taxi$month[1]=="Jan"
-str(taxi$month)
-
-
-# Fitting a tree with total as the outcome and lat, long, hour, wday, and month as predictors
-fitted_tree <- tree(total ~ lat + long + hour + wday + month , data = taxi)
-
-# draw a diagram of the tree 
-plot(fitted_tree)
-text(fitted_tree, pretty = 0)
-
-# Summarizing the performance of the tree
-summary(fitted_tree)
-
-
-# Loading in the randomForest package
+library(tree)
 library(randomForest)
 
-# Fitting a random forest
-fitted_forest <- randomForest(total ~ lat + long + hour + wday + month , data = taxi,
-                             ntree = 80, sampsize = 10000)
+# Load dataset
+# Replace 'your_dataset.csv' with the path to your dataset
+data <- read.csv("C:/Users/darla/OneDrive/Documents/R Programs/taxi.csv")
 
-# Printing the fitted_forest object
-fitted_forest
+# Data preprocessing
+# Convert datetime columns to POSIXct
+data$pickup_datetime <- ymd_hms(data$pickup_datetime)
 
 
-# Extracting the prediction from fitted_forest
-taxi$pred_total <- fitted_forest$predicted
+# Extract temporal features
+data$pickup_hour <- hour(data$pickup_datetime)
+data$pickup_day <- wday(data$pickup_datetime, label = TRUE)
 
-# Plotting the predicted mean trip prices from according to the random forest
-ggmap(manhattan, darken = 0.5) +
-   scale_fill_viridis(option = 'plasma') +
-stat_summary_2d(aes(x = long, y = lat, z = pred_total), data = taxi, bins = 60, alpha = 0.6, fun = mean) +
-labs()
+# Remove rows with missing or erroneous values
+data <- na.omit(data)
+data <- data[data$fare_amount > 0, ]
 
-# Function that returns the mean *if* there are 15 or more datapoints
-mean_if_enough_data <- function(x) { 
-    ifelse( length(x) >= 15, mean(x), NA) 
-}
+ggmap(nyc_map) +
+  geom_point(data = data, aes(x = pickup_longitude, y = pickup_latitude),
+             color = "blue", alpha = 0.5) +
+  labs(title = "Taxi Pickup Locations")
 
-# Plotting the mean trip prices from the data
-ggmap(manhattan, darken = 0.5) +
-   scale_fill_viridis(option = 'plasma') +
-stat_summary_2d(aes(x = long, y = lat, z = total), data = taxi, bins = 60, alpha = 0.6, fun = mean_if_enough_data) +
-labs()
+# Train-Test Split
+set.seed(123)
+train_indices <- sample(1:nrow(data), 0.8 * nrow(data))
+train_data <- data[train_indices, ]
+test_data <- data[-train_indices, ]
 
-spends_most_on_trips <- "downtown" # "uptown" or "downtown"
-#dim(taxi)
+# Decision Tree Model
+tree_model <- tree(fare_amount ~ trip_time_in_secs + pickup_datetime + pickup_longitude + pickup_latitude, data = train_data)
+summary(tree_model)
+
+# Random Forest Model
+rf_model <- randomForest(fare_amount ~ trip_time_in_secs + pickup_datetime + pickup_longitude + pickup_latitude, data = train_data, ntree = 100, importance = TRUE)
+print(rf_model)
+
+# Predictions and Validation
+tree_predictions <- predict(tree_model, test_data)
+rf_predictions <- predict(rf_model, test_data)
+
+# Calculate RMSE for both models
+tree_rmse <- sqrt(mean((tree_predictions - test_data$fare_amount)^2))
+rf_rmse <- sqrt(mean((rf_predictions - test_data$fare_amount)^2))
+
+cat("Decision Tree RMSE:", tree_rmse, "\n")
+cat("Random Forest RMSE:", rf_rmse, "\n")
+
+# Visualize predictions vs actual fares
+test_data <- test_data %>%
+  mutate(tree_pred = tree_predictions, rf_pred = rf_predictions)
+
+ggplot(test_data, aes(x = fare_amount)) +
+  geom_point(aes(y = tree_pred, color = "Tree")) +
+  geom_point(aes(y = rf_pred, color = "Random Forest")) +
+  labs(title = "Predicted vs Actual Taxi Fares", y = "Predicted Fare", color = "Model")
+
+# Geospatial Heatmap
+heatmap_data <- data %>%
+  group_by(pickup_latitude, pickup_longitude) %>%
+  summarize(mean_fare = mean(fare_amount))
+
